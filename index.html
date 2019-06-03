@@ -1,0 +1,189 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>PHP大文件分片上传</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+</head>
+<style type="text/css">
+#percent-bg{position:relative;width:100%;height:20px;border:1px solid #ccc;}
+#percent{position:absolute;display:block;width:0;height:100%;left:0;background:green;z-index:100;}
+#percent_num{position:absolute;display:block;width:30px;height:100%;left:50%;margin-left:-15px;z-index:200; text-align:center;}
+</style>
+<script type="text/javascript" src="http://luyugao.com/demo/blockuploader/jquery.min.js"></script>
+<script type="text/javascript">
+var pz = {
+	"maxSize":1024*1024*20*1024, //文件大小限制20M
+	"bufferSize":1024*512, //单个分片大小
+	"blocks":[], //分片数据集合
+	"blockName":"newfile",//表单 file 的名字
+	"filename":"",//上传的本地文件真实文件名
+	"threadNum":2,//上传线程数量
+	"reset":function(fname){
+		this.blocks = [];
+		this.filename = fname;
+	}
+}
+function afterselect(){
+	if(document.getElementById("x").files.length<1){
+		return false;
+	}
+	var file = document.getElementById("x").files[0];
+	if(file.size>pz.maxSize){
+		showmsg("文件大小限制："+pz.maxSize+"，实际文件大小："+file.size);
+		return;
+	}
+	pz.reset(file.name);
+	pz.threadNum = parseInt($("#threadCount").val());//设定线程数量
+	
+	
+	__index = __activeThreadCount = __sendedBlockCount = 0;
+	
+	var endByte = 0,startByte = 0;
+
+	while(true){
+		startByte = endByte;
+		if(endByte + pz.bufferSize >= file.size){
+			endByte = file.size;
+		}else{
+			endByte = endByte+pz.bufferSize;
+		}
+		var block = sliceFile(file,startByte,endByte);
+		if(!block){
+			showmsg("分片失败");
+			return;
+		}
+		pz.blocks.push(block);
+		if(endByte >= file.size){ break; }
+	}
+	showmsg("文件名："+file.name);
+	showmsg("文件大小："+file.size);
+	showmsg("总分片数量："+pz.blocks.length);
+	
+	var dis = Math.min(pz.threadNum,pz.blocks.length);
+	for(var i=0;i<dis;i++){
+		(function(i){
+			setTimeout(function(){
+				__activeThreadCount++;
+				fenpei(i);
+			},500);
+		})(i);
+	}
+	showmsg("启动线程："+dis+" 个");
+	showmsg("------------------------");
+}
+
+//只要是操作主线程中的变量或其他，就一定会自动同步到主线程来。相当于自动lock()
+var __index = 0;
+var __activeThreadCount = 0; //当前活跃线程数量
+var __sendedBlockCount = 0; //已上传的block数量
+function fenpei(i){
+	//参数:线程名
+	if(__index>=pz.blocks.length){
+		showmsg("线程"+i+' 结束');
+		__activeThreadCount--;
+		if(__activeThreadCount==0){
+			showmsg("------------------------");
+			showmsg('多线程分片上传完毕，正在处理分片数据...');
+			combineFile();
+		}
+		return;
+	}
+	uploadBlock(i,__index);
+	__index++;
+}
+//发送拼接分块命令
+function combineFile(){
+	$.post(
+		'blobuploader.php',
+		{"act":"combine","chunks":pz.blocks.length,"filename":pz.filename},
+		function(e){
+			if(e.flag){
+				showmsg("分片数据处理完成，任务结束，URl："+e.url);
+			}else{
+				showmsg(e.info);
+			}
+		},'json'
+	);
+}
+//显示进度
+function showPercent(){
+	var percent = parseInt(__sendedBlockCount / pz.blocks.length *100);
+	if(percent>100){ percent = 100;	}
+	
+	$("#percent").stop(true,true).animate({"width":percent+"%"},10);
+	$("#percent_num").html(percent+"%");
+}
+//上传一个分片
+function uploadBlock(i,index){
+	var chunk = index;
+	showmsg('线程'+i+' 分片'+chunk+' start');
+	var fd = new FormData();
+    fd.append("newfile", pz.blocks[chunk]);//文件
+    fd.append("filename", pz.filename);//文件名
+    fd.append("chunk", chunk);//分片索引
+    fd.append("chunks", pz.blocks.length);//分片总数
+    $.ajax({
+		url:'blobuploader.php',
+		type:"post",
+		data: fd,
+		dataType:"json",
+		cache: false,
+		contentType:false,
+		processData:false,//设置为true的时候,jquery ajax 提交的时候不会序列化 data，而是直接使用data
+		success:function(data){
+			//timer线程中的异步，此时同步了
+			showmsg("线程"+i+" 分片"+chunk+" end");
+			__sendedBlockCount++;
+			showPercent();
+			fenpei(i);
+		},
+		complete:function(XMLHttpRequest,textStatus){
+		},
+		error:function(){}
+	});
+}
+//分割file成分片
+function sliceFile(file,startByte,endByte){
+	if(file.slice){
+		return  file.slice(startByte,endByte);
+	}
+	if(file.webkitSlice){
+		return  file.webkitSlice(startByte,endByte);
+	}
+	if(file.mozSlice){
+		return  file.mozSlice(startByte,endByte);
+	}
+	return null;
+}
+//输出消息
+function showmsg(msg){
+	var _t = $("#msg").val();
+	_t += msg+"\r\n";
+	$("#msg").val(_t);
+	var scrollTop = $("#msg")[0].scrollHeight;
+	$("#msg").scrollTop(scrollTop);
+}
+</script>
+<body>
+<h2>jQuery+PHP实现对大文件分片后多线程上传，返回上传后的URL</h2>
+<p>选择文件后自动开始上传</p>
+<p>线程数：
+<select id="threadCount" style="height:28px;">
+	<option value="1">1</option>
+	<option value="2" selected="selected">2</option>
+	<option value="3">3</option>
+	<option value="5">5</option>
+	<option value="10">10</option>
+</select>
+</p>
+<input type="file" id="x" onchange="afterselect();">
+<p></p>
+<textarea id="msg" style="width:99%;height:400px;overflow-y:auto;"></textarea>
+<p></p>
+<div id="percent-bg">
+	<span id="percent"></span>
+	<span id="percent_num">0%</span>
+</div>
+</body>
+</html>
